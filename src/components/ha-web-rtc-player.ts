@@ -234,6 +234,9 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private _cleanUp() {
+    console.timeLog("WebRTC", "stopped");
+    console.timeEnd("WebRTC");
+
     if (this._remoteStream) {
       this._remoteStream.getTracks().forEach((track) => {
         track.stop();
