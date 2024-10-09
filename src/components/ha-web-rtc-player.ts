@@ -1,3 +1,4 @@
+import { UnsubscribeFunc } from "home-assistant-js-websocket";
 import {
   css,
   CSSResultGroup,
@@ -52,6 +53,12 @@ class HaWebRtcPlayer extends LitElement {
 
   private _remoteStream?: MediaStream;
 
+  private _unsub?: Promise<UnsubscribeFunc>;
+
+  private _sessionId?: string;
+
+  private _candidatesList: string[] = [];
+
   protected override render(): TemplateResult {
     if (this._error) {
       return html`<ha-alert alert-type="error">${this._error}</ha-alert>`;
@@ -89,6 +96,8 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private async _startWebRtc(): Promise<void> {
+    this._cleanUp();
+
     this._error = undefined;
 
     const clientConfig = await fetchWebRtcClientConfiguration(
@@ -96,20 +105,20 @@ class HaWebRtcPlayer extends LitElement {
       this.entityid
     );
 
-    const peerConnection = new RTCPeerConnection(clientConfig.configuration);
+    this._peerConnection = new RTCPeerConnection(clientConfig.configuration);
 
     if (clientConfig.dataChannel) {
       // Some cameras (such as nest) require a data channel to establish a stream
       // however, not used by any integrations.
-      peerConnection.createDataChannel(clientConfig.dataChannel);
+      this._peerConnection.createDataChannel(clientConfig.dataChannel);
     }
-    peerConnection.addTransceiver("audio", { direction: "recvonly" });
-    peerConnection.addTransceiver("video", { direction: "recvonly" });
+    this._peerConnection.addTransceiver("audio", { direction: "recvonly" });
+    this._peerConnection.addTransceiver("video", { direction: "recvonly" });
 
     let candidates = ""; // Build an Offer SDP string with ice candidates
     this._candidatesList = [];
 
-    peerConnection.addEventListener("icecandidate", async (event) => {
+    this._peerConnection.addEventListener("icecandidate", async (event) => {
       if (!event.candidate?.candidate) {
         // Gathering complete
         return;
@@ -133,12 +142,10 @@ class HaWebRtcPlayer extends LitElement {
       offerToReceiveVideo: true,
     };
     const offer: RTCSessionDescriptionInit =
-      await peerConnection.createOffer(offerOptions);
-    await peerConnection.setLocalDescription(offer);
+      await this._peerConnection.createOffer(offerOptions);
+    await this._peerConnection.setLocalDescription(offer);
 
     const offer_sdp = offer.sdp! + candidates;
-
-    this._peerConnection = peerConnection;
 
     try {
       this._unsub = webRtcOffer(this.hass, this.entityid, offer_sdp, (event) =>
@@ -146,13 +153,13 @@ class HaWebRtcPlayer extends LitElement {
       );
     } catch (err: any) {
       this._error = "Failed to start WebRTC stream: " + err.message;
-      peerConnection.close();
+      this._peerConnection.close();
       return;
     }
 
     // Setup callbacks to render remote stream once media tracks are discovered.
     const remoteStream = new MediaStream();
-    peerConnection.addEventListener("track", (event) => {
+    this._peerConnection.addEventListener("track", (event) => {
       remoteStream.addTrack(event.track);
       this._videoEl.srcObject = remoteStream;
     });
@@ -211,6 +218,10 @@ class HaWebRtcPlayer extends LitElement {
       this._peerConnection.close();
       this._peerConnection = undefined;
     }
+    this._unsub?.then((unsub) => unsub());
+    this._unsub = undefined;
+    this._sessionId = undefined;
+    this._candidatesList = [];
   }
 
   private _loadedData() {
