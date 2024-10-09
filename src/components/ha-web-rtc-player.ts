@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import { UnsubscribeFunc } from "home-assistant-js-websocket";
 import {
   css,
@@ -96,14 +97,20 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private async _startWebRtc(): Promise<void> {
+    console.time("WebRTC");
+
     this._cleanUp();
 
     this._error = undefined;
+
+    console.timeLog("WebRTC", "start clientConfig");
 
     const clientConfig = await fetchWebRtcClientConfiguration(
       this.hass,
       this.entityid
     );
+
+    console.timeLog("WebRTC", "end clientConfig", clientConfig);
 
     this._peerConnection = new RTCPeerConnection(clientConfig.configuration);
 
@@ -123,6 +130,13 @@ class HaWebRtcPlayer extends LitElement {
         // Gathering complete
         return;
       }
+
+      console.timeLog(
+        "WebRTC",
+        "local ice candidate",
+        event.candidate.candidate
+      );
+
       if (this._sessionId) {
         addWebRtcCandidate(
           this.hass,
@@ -141,9 +155,19 @@ class HaWebRtcPlayer extends LitElement {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     };
+
+    console.timeLog("WebRTC", "start createOffer", offerOptions);
+
     const offer: RTCSessionDescriptionInit =
       await this._peerConnection.createOffer(offerOptions);
+
+    console.timeLog("WebRTC", "end createOffer", offer);
+
+    console.timeLog("WebRTC", "start setLocalDescription");
+
     await this._peerConnection.setLocalDescription(offer);
+
+    console.timeLog("WebRTC", "end setLocalDescription");
 
     const offer_sdp = offer.sdp! + candidates;
 
@@ -180,9 +204,13 @@ class HaWebRtcPlayer extends LitElement {
       this._candidatesList = [];
     }
     if (event.type === "answer") {
+      console.timeLog("WebRTC", "answer", event.answer);
+
       this._handleAnswer(event);
     }
     if (event.type === "candidate") {
+      console.timeLog("WebRTC", "remote ice candidate", event.candidate);
+
       this._peerConnection?.addIceCandidate(
         new RTCIceCandidate({ candidate: event.candidate, sdpMid: "0" })
       );
@@ -196,11 +224,13 @@ class HaWebRtcPlayer extends LitElement {
       sdp: event.answer,
     });
     try {
+      console.timeLog("WebRTC", "start setRemoteDescription", remoteDesc);
       await this._peerConnection?.setRemoteDescription(remoteDesc);
     } catch (err: any) {
       this._error = "Failed to connect WebRTC stream: " + err.message;
       this._peerConnection?.close();
     }
+    console.timeLog("WebRTC", "end setRemoteDescription");
   }
 
   private _cleanUp() {
@@ -227,6 +257,9 @@ class HaWebRtcPlayer extends LitElement {
   private _loadedData() {
     // @ts-ignore
     fireEvent(this, "load");
+
+    console.timeLog("WebRTC", "loadedData");
+    console.timeEnd("WebRTC");
   }
 
   static get styles(): CSSResultGroup {
