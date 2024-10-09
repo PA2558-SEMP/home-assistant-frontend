@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import {
   css,
   CSSResultGroup,
@@ -11,9 +10,11 @@ import { customElement, property, query, state } from "lit/decorators";
 import { ifDefined } from "lit/directives/if-defined";
 import { fireEvent } from "../common/dom/fire_event";
 import {
+  addWebRtcCandidate,
   fetchWebRtcClientConfiguration,
-  handleWebRtcOffer,
   WebRtcAnswer,
+  webRtcOffer,
+  WebRtcOfferEvent,
 } from "../data/camera";
 import type { HomeAssistant } from "../types";
 import "./ha-alert";
@@ -88,18 +89,12 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private async _startWebRtc(): Promise<void> {
-    console.time("WebRTC");
-
     this._error = undefined;
-
-    console.timeLog("WebRTC", "start clientConfig");
 
     const clientConfig = await fetchWebRtcClientConfiguration(
       this.hass,
       this.entityid
     );
-
-    console.timeLog("WebRTC", "end clientConfig", clientConfig);
 
     const peerConnection = new RTCPeerConnection(clientConfig.configuration);
 
@@ -111,52 +106,44 @@ class HaWebRtcPlayer extends LitElement {
     peerConnection.addTransceiver("audio", { direction: "recvonly" });
     peerConnection.addTransceiver("video", { direction: "recvonly" });
 
+    let candidates = ""; // Build an Offer SDP string with ice candidates
+    this._candidatesList = [];
+
+    peerConnection.addEventListener("icecandidate", async (event) => {
+      if (!event.candidate?.candidate) {
+        // Gathering complete
+        return;
+      }
+      if (this._sessionId) {
+        addWebRtcCandidate(
+          this.hass,
+          this.entityid,
+          this._sessionId,
+          event.candidate.candidate
+        );
+      } else if (this._unsub) {
+        this._candidatesList.push(event.candidate.candidate);
+      } else {
+        candidates += `a=${event.candidate.candidate}\r\n`;
+      }
+    });
+
     const offerOptions: RTCOfferOptions = {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     };
-
-    console.timeLog("WebRTC", "start createOffer", offerOptions);
-
     const offer: RTCSessionDescriptionInit =
       await peerConnection.createOffer(offerOptions);
-
-    console.timeLog("WebRTC", "end createOffer", offer);
-
-    console.timeLog("WebRTC", "start setLocalDescription");
-
     await peerConnection.setLocalDescription(offer);
-
-    console.timeLog("WebRTC", "end setLocalDescription");
-
-    console.timeLog("WebRTC", "start iceResolver");
-
-    let candidates = ""; // Build an Offer SDP string with ice candidates
-    const iceResolver = new Promise<void>((resolve) => {
-      peerConnection.addEventListener("icecandidate", (event) => {
-        if (!event.candidate?.candidate) {
-          resolve(); // Gathering complete
-          return;
-        }
-        console.timeLog("WebRTC", "iceResolver candidate", event.candidate);
-        candidates += `a=${event.candidate.candidate}\r\n`;
-      });
-    });
-    await iceResolver;
-
-    console.timeLog("WebRTC", "end iceResolver", candidates);
 
     const offer_sdp = offer.sdp! + candidates;
 
-    let webRtcAnswer: WebRtcAnswer;
+    this._peerConnection = peerConnection;
+
     try {
-      console.timeLog("WebRTC", "start WebRTCOffer", offer_sdp);
-      webRtcAnswer = await handleWebRtcOffer(
-        this.hass,
-        this.entityid,
-        offer_sdp
+      this._unsub = webRtcOffer(this.hass, this.entityid, offer_sdp, (event) =>
+        this._handleOfferEvent(event)
       );
-      console.timeLog("WebRTC", "end webRtcOffer", webRtcAnswer);
     } catch (err: any) {
       this._error = "Failed to start WebRTC stream: " + err.message;
       peerConnection.close();
@@ -166,27 +153,47 @@ class HaWebRtcPlayer extends LitElement {
     // Setup callbacks to render remote stream once media tracks are discovered.
     const remoteStream = new MediaStream();
     peerConnection.addEventListener("track", (event) => {
-      console.timeLog("WebRTC", "track", event);
       remoteStream.addTrack(event.track);
       this._videoEl.srcObject = remoteStream;
     });
     this._remoteStream = remoteStream;
+  }
 
+  private _handleOfferEvent(event: WebRtcOfferEvent) {
+    if (event.type === "session_id") {
+      this._sessionId = event.session_id;
+      this._candidatesList.forEach((candidate) =>
+        addWebRtcCandidate(
+          this.hass,
+          this.entityid,
+          event.session_id,
+          candidate
+        )
+      );
+      this._candidatesList = [];
+    }
+    if (event.type === "answer") {
+      this._handleAnswer(event);
+    }
+    if (event.type === "candidate") {
+      this._peerConnection?.addIceCandidate(
+        new RTCIceCandidate({ candidate: event.candidate, sdpMid: "0" })
+      );
+    }
+  }
+
+  private async _handleAnswer(event: WebRtcAnswer) {
     // Initiate the stream with the remote device
     const remoteDesc = new RTCSessionDescription({
       type: "answer",
-      sdp: webRtcAnswer.answer,
+      sdp: event.answer,
     });
     try {
-      console.timeLog("WebRTC", "start setRemoteDescription", remoteDesc);
-      await peerConnection.setRemoteDescription(remoteDesc);
-      console.timeLog("WebRTC", "end setRemoteDescription");
+      await this._peerConnection?.setRemoteDescription(remoteDesc);
     } catch (err: any) {
       this._error = "Failed to connect WebRTC stream: " + err.message;
-      peerConnection.close();
-      return;
+      this._peerConnection?.close();
     }
-    this._peerConnection = peerConnection;
   }
 
   private _cleanUp() {
@@ -207,8 +214,6 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private _loadedData() {
-    console.timeLog("WebRTC", "loadedData");
-    console.timeEnd("WebRTC");
     // @ts-ignore
     fireEvent(this, "load");
   }
