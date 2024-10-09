@@ -39,7 +39,11 @@ export interface Stream {
   url: string;
 }
 
-export type WebRtcOfferEvent = WebRtcId | WebRtcAnswer | WebRtcCandidate;
+export type WebRtcOfferEvent =
+  | WebRtcId
+  | WebRtcAnswer
+  | WebRtcCandidate
+  | WebRtcError;
 
 export interface WebRtcId {
   type: "session_id";
@@ -54,6 +58,12 @@ export interface WebRtcAnswer {
 export interface WebRtcCandidate {
   type: "candidate";
   candidate: string;
+}
+
+export interface WebRtcError {
+  type: "error";
+  code: string;
+  message: string;
 }
 
 export interface WebRtcOfferResponse {

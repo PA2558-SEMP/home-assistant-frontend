@@ -177,7 +177,7 @@ class HaWebRtcPlayer extends LitElement {
       );
     } catch (err: any) {
       this._error = "Failed to start WebRTC stream: " + err.message;
-      this._peerConnection.close();
+      this._cleanUp();
       return;
     }
 
@@ -215,6 +215,10 @@ class HaWebRtcPlayer extends LitElement {
         new RTCIceCandidate({ candidate: event.candidate, sdpMid: "0" })
       );
     }
+    if (event.type === "error") {
+      this._error = "Failed to start WebRTC stream: " + event.message;
+      this._cleanUp();
+    }
   }
 
   private async _handleAnswer(event: WebRtcAnswer) {
@@ -228,7 +232,7 @@ class HaWebRtcPlayer extends LitElement {
       await this._peerConnection?.setRemoteDescription(remoteDesc);
     } catch (err: any) {
       this._error = "Failed to connect WebRTC stream: " + err.message;
-      this._peerConnection?.close();
+      this._cleanUp();
     }
     console.timeLog("WebRTC", "end setRemoteDescription");
   }
