@@ -97,9 +97,9 @@ class HaWebRtcPlayer extends LitElement {
   }
 
   private async _startWebRtc(): Promise<void> {
-    console.time("WebRTC");
-
     this._cleanUp();
+
+    console.time("WebRTC");
 
     this._error = undefined;
 
@@ -122,34 +122,12 @@ class HaWebRtcPlayer extends LitElement {
     this._peerConnection.addTransceiver("audio", { direction: "recvonly" });
     this._peerConnection.addTransceiver("video", { direction: "recvonly" });
 
-    let candidates = ""; // Build an Offer SDP string with ice candidates
     this._candidatesList = [];
 
-    this._peerConnection.addEventListener("icecandidate", async (event) => {
-      if (!event.candidate?.candidate) {
-        // Gathering complete
-        return;
-      }
-
-      console.timeLog(
-        "WebRTC",
-        "local ice candidate",
-        event.candidate.candidate
-      );
-
-      if (this._sessionId) {
-        addWebRtcCandidate(
-          this.hass,
-          this.entityid,
-          this._sessionId,
-          event.candidate.candidate
-        );
-      } else if (this._unsub) {
-        this._candidatesList.push(event.candidate.candidate);
-      } else {
-        candidates += `a=${event.candidate.candidate}\r\n`;
-      }
-    });
+    this._peerConnection.addEventListener(
+      "icecandidate",
+      this._handleIceCandidate
+    );
 
     const offerOptions: RTCOfferOptions = {
       offerToReceiveAudio: true,
@@ -169,7 +147,15 @@ class HaWebRtcPlayer extends LitElement {
 
     console.timeLog("WebRTC", "end setLocalDescription");
 
+    let candidates = "";
+
+    while (this._candidatesList.length) {
+      candidates += `a=${this._candidatesList.pop()}\r\n`;
+    }
+
     const offer_sdp = offer.sdp! + candidates;
+
+    console.timeLog("WebRTC", "start webRtcOffer", offer_sdp);
 
     try {
       this._unsub = webRtcOffer(this.hass, this.entityid, offer_sdp, (event) =>
@@ -182,12 +168,8 @@ class HaWebRtcPlayer extends LitElement {
     }
 
     // Setup callbacks to render remote stream once media tracks are discovered.
-    const remoteStream = new MediaStream();
-    this._peerConnection.addEventListener("track", (event) => {
-      remoteStream.addTrack(event.track);
-      this._videoEl.srcObject = remoteStream;
-    });
-    this._remoteStream = remoteStream;
+    this._remoteStream = new MediaStream();
+    this._peerConnection.addEventListener("track", this._addTrack);
   }
 
   private _handleOfferEvent(event: WebRtcOfferEvent) {
@@ -221,6 +203,34 @@ class HaWebRtcPlayer extends LitElement {
     }
   }
 
+  private _handleIceCandidate = async (event: RTCPeerConnectionIceEvent) => {
+    if (!event.candidate?.candidate) {
+      // Gathering complete
+      return;
+    }
+
+    console.timeLog("WebRTC", "local ice candidate", event.candidate.candidate);
+
+    if (this._sessionId) {
+      addWebRtcCandidate(
+        this.hass,
+        this.entityid,
+        this._sessionId,
+        event.candidate.candidate
+      );
+    } else {
+      this._candidatesList.push(event.candidate.candidate);
+    }
+  };
+
+  private _addTrack = (event: RTCTrackEvent) => {
+    if (!this._remoteStream) {
+      return;
+    }
+    this._remoteStream.addTrack(event.track);
+    this._videoEl.srcObject = this._remoteStream;
+  };
+
   private async _handleAnswer(event: WebRtcAnswer) {
     // Initiate the stream with the remote device
     const remoteDesc = new RTCSessionDescription({
@@ -253,6 +263,11 @@ class HaWebRtcPlayer extends LitElement {
     }
     if (this._peerConnection) {
       this._peerConnection.close();
+      this._peerConnection.removeEventListener(
+        "icecandidate",
+        this._handleIceCandidate
+      );
+      this._peerConnection.removeEventListener("track", this._addTrack);
       this._peerConnection = undefined;
     }
     this._unsub?.then((unsub) => unsub());
